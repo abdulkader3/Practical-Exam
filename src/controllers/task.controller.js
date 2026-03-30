@@ -1,4 +1,5 @@
 import { Task } from "../models/index.js";
+import { User } from "../models/index.js";
 import { ApiErrors } from "../utils/ApiErrors.js";
 import { asyncHandler } from "../utils/asyncHandlers.js";
 
@@ -23,12 +24,54 @@ const createTask = asyncHandler(async (req, res, _next) => {
 });
 
 const getAllTasks = asyncHandler(async (req, res, _next) => {
-  const { status, priority, page = 1, limit = 20 } = req.query;
+  const { 
+    search, 
+    email, 
+    status, 
+    priority, 
+    page = 1, 
+    limit = 20 
+  } = req.query;
   const skip = (parseInt(page) - 1) * parseInt(limit);
 
   const filter = {};
+
   if (status) filter.status = status;
   if (priority) filter.priority = priority;
+
+  if (email) {
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (user) {
+      filter.$or = [
+        { createdBy: user._id },
+        { assignedTo: user._id }
+      ];
+    } else {
+      return res.status(200).json({
+        success: true,
+        data: {
+          tasks: [],
+          pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total: 0,
+            pages: 0,
+          },
+        },
+      });
+    }
+  }
+
+  if (search) {
+    const searchRegex = new RegExp(search, 'i');
+    filter.$or = filter.$or || [];
+    filter.$or.push(
+      { title: searchRegex },
+      { description: searchRegex },
+      { 'tags.name': searchRegex },
+      { 'comments.content': searchRegex }
+    );
+  }
 
   const tasks = await Task.find(filter)
     .populate("createdBy", "name email")
