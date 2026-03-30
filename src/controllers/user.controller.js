@@ -1,5 +1,5 @@
 import { v2 as cloudinary } from "cloudinary";
-import { User, AuditLog } from "../models/index.js";
+import { User } from "../models/index.js";
 import { ApiErrors } from "../utils/ApiErrors.js";
 import { asyncHandler } from "../utils/asyncHandlers.js";
 
@@ -35,7 +35,14 @@ const getAllUsers = asyncHandler(async (req, res, _next) => {
 });
 
 const getUserById = asyncHandler(async (req, res, _next) => {
-  const user = await User.findById(req.params.id).select(
+  const requestedUserId = req.params.id;
+  const currentUser = req.user;
+
+  if (currentUser.role !== "admin" && currentUser._id.toString() !== requestedUserId) {
+    throw new ApiErrors(403, "You can only access your own data");
+  }
+
+  const user = await User.findById(requestedUserId).select(
     "-passwordHash -refreshToken"
   );
 
@@ -49,95 +56,11 @@ const getUserById = asyncHandler(async (req, res, _next) => {
   });
 });
 
-const updateProfile = asyncHandler(async (req, res, _next) => {
-  const { name, phone, company } = req.body;
 
-  const user = await User.findById(req.user._id);
 
-  if (!user) {
-    throw new ApiErrors(404, "User not found");
-  }
 
-  if (name) user.name = name;
-  if (phone !== undefined) user.phone = phone;
-  if (company !== undefined) user.company = company;
-
-  if (req.file) {
-    const b64 = Buffer.from(req.file.buffer).toString("base64");
-    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
-
-    if (user.profileImage?.publicId) {
-      await cloudinary.uploader.destroy(user.profileImage.publicId);
-    }
-
-    const result = await cloudinary.uploader.upload(dataURI, {
-      folder: "ok_backend/profile_images",
-      resource_type: "image",
-      transformation: [
-        { width: 500, height: 500, crop: "fill", gravity: "face" },
-        { quality: "auto", fetch_format: "auto" },
-      ],
-    });
-
-    user.profileImage = {
-      url: result.secure_url,
-      publicId: result.public_id,
-    };
-  }
-
-  await user.save();
-
-  res.status(200).json({
-    success: true,
-    data: {
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        company: user.company,
-        role: user.role,
-        profileImage: user.profileImage,
-      },
-    },
-    message: "Profile updated successfully",
-  });
-});
-
-const deactivateUser = asyncHandler(async (req, res, _next) => {
-  const { id } = req.params;
-
-  const targetUser = await User.findById(id);
-
-  if (!targetUser) {
-    throw new ApiErrors(404, "User not found");
-  }
-
-  if (targetUser.role === "admin" && req.user.role !== "admin") {
-    throw new ApiErrors(403, "Only admin can deactivate admin users");
-  }
-
-  targetUser.active = false;
-  await targetUser.save();
-
-  await AuditLog.create({
-    operation: "update",
-    collection: "users",
-    docId: targetUser._id,
-    userId: req.user._id,
-    userEmail: req.user.email,
-    changes: [{ field: "active", oldValue: true, newValue: false }],
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "User deactivated successfully",
-  });
-});
 
 export {
   getAllUsers,
-  getUserById,
-  deactivateUser,
-  updateProfile,
+  getUserById
 };
