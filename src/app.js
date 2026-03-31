@@ -7,6 +7,7 @@ import express from "express";
 
 
 const app = express();
+
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN,
@@ -24,7 +25,9 @@ app.use(cookieParser());
 
 // Route import
 import authRoutes from "./routes/auth.routes.js";
+
 import taskRoutes from "./routes/task.routes.js";
+
 import userRoutes from "./routes/user.routes.js";
 
 

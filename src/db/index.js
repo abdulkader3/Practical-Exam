@@ -7,6 +7,7 @@ const connectDB = async () => {
       `${process.env.MONGODB_URI}/${DB_NAME}`,);
       console.log(`App connented mongoDB 🌸 ${connectionInstace.connection.host}`)
   } catch (error) {
+    
     console.log("src > db > index.js : " , error)
     process.exit(1);
   }

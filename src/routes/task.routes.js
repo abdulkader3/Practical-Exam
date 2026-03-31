@@ -7,7 +7,7 @@ import {
   deleteTask,
   addComment,
   deleteComment,
-} from "../controllers/task.controller.js";
+} from "../controllers/task/index.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
 
 const router = Router();

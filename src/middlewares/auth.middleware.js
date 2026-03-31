@@ -33,6 +33,7 @@ export const verifyJWT = asyncHandler(async (req, res, next) => {
 });
 
 export const optionalAuth = asyncHandler(async (req, res, next) => {
+  
   let token = req.header("Authorization")?.replace("Bearer ", "");
 
   if (!token) {

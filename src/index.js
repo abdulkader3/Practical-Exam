@@ -8,6 +8,8 @@ dotenv.config("./.env");
 
 
 connectDB()
+
+
   .then(() => {
     const PORT = process.env.PORT || 4000;
     app.listen(PORT, ()=>{console.log(`app running on port http://localhost:${PORT} `)});
