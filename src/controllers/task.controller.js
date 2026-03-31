@@ -1,5 +1,5 @@
-import { Task } from "../models/index.js";
-import { User } from "../models/index.js";
+import mongoose from "mongoose";
+import { Task, User, AuditLog } from "../models/index.js";
 import { ApiErrors } from "../utils/ApiErrors.js";
 import { asyncHandler } from "../utils/asyncHandlers.js";
 
@@ -17,9 +17,25 @@ const createTask = asyncHandler(async (req, res, _next) => {
     createdBy: req.user._id,
   });
 
+  const taskWithUsers = await Task.findById(task._id)
+    .populate("createdBy", "name email")
+    .populate("assignedTo", "name email")
+    .lean();
+
+  await AuditLog.create({
+    operation: "create",
+    collection: "tasks",
+    docId: task._id,
+    userId: req.user._id,
+    userEmail: req.user.email,
+    after: taskWithUsers,
+    ipAddress: req.ip,
+    userAgent: req.get("user-agent"),
+  });
+
   res.status(201).json({
     success: true,
-    data: { task },
+    data: { task: taskWithUsers },
   });
 });
 
@@ -32,17 +48,25 @@ const getAllTasks = asyncHandler(async (req, res, _next) => {
     page = 1, 
     limit = 20 
   } = req.query;
-  const skip = (parseInt(page) - 1) * parseInt(limit);
+  
+  const pageNum = parseInt(page);
+  const limitNum = parseInt(limit);
+  const skip = (pageNum - 1) * limitNum;
 
-  const filter = {};
+  const matchStage = {};
 
-  if (status) filter.status = status;
-  if (priority) filter.priority = priority;
+  if (status) matchStage.status = status;
+  if (priority) matchStage.priority = priority;
 
-  if (email) {
-    const user = await User.findOne({ email: email.toLowerCase() });
+  if (req.user.role !== "admin") {
+    matchStage.$or = [
+      { createdBy: req.user._id },
+      { assignedTo: req.user._id }
+    ];
+  } else if (email) {
+    const user = await User.findOne({ email: email.toLowerCase() }).select("_id").lean();
     if (user) {
-      filter.$or = [
+      matchStage.$or = [
         { createdBy: user._id },
         { assignedTo: user._id }
       ];
@@ -52,8 +76,8 @@ const getAllTasks = asyncHandler(async (req, res, _next) => {
         data: {
           tasks: [],
           pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
+            page: pageNum,
+            limit: limitNum,
             total: 0,
             pages: 0,
           },
@@ -63,34 +87,61 @@ const getAllTasks = asyncHandler(async (req, res, _next) => {
   }
 
   if (search) {
-    const searchRegex = new RegExp(search, 'i');
-    filter.$or = filter.$or || [];
-    filter.$or.push(
-      { title: searchRegex },
-      { description: searchRegex },
-      { 'tags.name': searchRegex },
-      { 'comments.content': searchRegex }
-    );
+    matchStage.$text = { $search: search };
   }
 
-  const tasks = await Task.find(filter)
-    .populate("createdBy", "name email")
-    .populate("assignedTo", "name email")
-    .skip(skip)
-    .limit(parseInt(limit))
-    .sort({ createdAt: -1 });
+  const aggregationPipeline = [
+    { $match: matchStage },
+    {
+      $lookup: {
+        from: "users",
+        localField: "createdBy",
+        foreignField: "_id",
+        as: "createdBy"
+      }
+    },
+    { $unwind: { path: "$createdBy", preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: "users",
+        localField: "assignedTo",
+        foreignField: "_id",
+        as: "assignedTo"
+      }
+    },
+    { $unwind: { path: "$assignedTo", preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        "createdBy.passwordHash": 0,
+        "createdBy.refreshToken": 0,
+        "assignedTo.passwordHash": 0,
+        "assignedTo.refreshToken": 0
+      }
+    },
+    { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: limitNum }
+  ];
 
-  const total = await Task.countDocuments(filter);
+  const [tasks, totalResult] = await Promise.all([
+    Task.aggregate(aggregationPipeline),
+    Task.aggregate([
+      { $match: matchStage },
+      { $count: "total" }
+    ])
+  ]);
+
+  const total = totalResult[0]?.total || 0;
 
   res.status(200).json({
     success: true,
     data: {
       tasks,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNum,
+        limit: limitNum,
         total,
-        pages: Math.ceil(total / parseInt(limit)),
+        pages: Math.ceil(total / limitNum),
       },
     },
   });
@@ -100,7 +151,8 @@ const getTaskById = asyncHandler(async (req, res, _next) => {
   const task = await Task.findById(req.params.id)
     .populate("createdBy", "name email")
     .populate("assignedTo", "name email")
-    .populate("comments.author", "name email");
+    .populate("comments.author", "name email")
+    .lean();
 
   if (!task) {
     throw new ApiErrors(404, "Task not found");
@@ -114,6 +166,16 @@ const getTaskById = asyncHandler(async (req, res, _next) => {
     throw new ApiErrors(403, "You can only view your own tasks");
   }
 
+  await AuditLog.create({
+    operation: "view",
+    collection: "tasks",
+    docId: task._id,
+    userId: req.user._id,
+    userEmail: req.user.email,
+    ipAddress: req.ip,
+    userAgent: req.get("user-agent"),
+  });
+
   res.status(200).json({
     success: true,
     data: { task },
@@ -123,7 +185,7 @@ const getTaskById = asyncHandler(async (req, res, _next) => {
 const updateTask = asyncHandler(async (req, res, _next) => {
   const { title, description, status, priority, dueDate, tags, assignedTo } = req.body;
 
-  const task = await Task.findById(req.params.id);
+  const task = await Task.findById(req.params.id).lean();
 
   if (!task) {
     throw new ApiErrors(404, "Task not found");
@@ -133,24 +195,44 @@ const updateTask = asyncHandler(async (req, res, _next) => {
     throw new ApiErrors(403, "You can only update your own tasks");
   }
 
-  if (title) task.title = title;
-  if (description !== undefined) task.description = description;
-  if (status) task.status = status;
-  if (priority) task.priority = priority;
-  if (dueDate !== undefined) task.dueDate = dueDate;
-  if (tags) task.tags = tags;
-  if (assignedTo !== undefined) task.assignedTo = assignedTo;
+  const updateFields = {};
+  if (title) updateFields.title = title;
+  if (description !== undefined) updateFields.description = description;
+  if (status) updateFields.status = status;
+  if (priority) updateFields.priority = priority;
+  if (dueDate !== undefined) updateFields.dueDate = dueDate;
+  if (tags) updateFields.tags = tags;
+  if (assignedTo !== undefined) updateFields.assignedTo = assignedTo;
 
-  await task.save();
+  const updatedTask = await Task.findByIdAndUpdate(
+    req.params.id,
+    { $set: updateFields },
+    { new: true, runValidators: true }
+  )
+    .populate("createdBy", "name email")
+    .populate("assignedTo", "name email")
+    .lean();
+
+  await AuditLog.create({
+    operation: "update",
+    collection: "tasks",
+    docId: task._id,
+    userId: req.user._id,
+    userEmail: req.user.email,
+    before: task,
+    after: updatedTask,
+    ipAddress: req.ip,
+    userAgent: req.get("user-agent"),
+  });
 
   res.status(200).json({
     success: true,
-    data: { task },
+    data: { task: updatedTask },
   });
 });
 
 const deleteTask = asyncHandler(async (req, res, _next) => {
-  const task = await Task.findById(req.params.id);
+  const task = await Task.findById(req.params.id).select("_id createdBy").lean();
 
   if (!task) {
     throw new ApiErrors(404, "Task not found");
@@ -161,6 +243,17 @@ const deleteTask = asyncHandler(async (req, res, _next) => {
   }
 
   await Task.findByIdAndDelete(req.params.id);
+
+  await AuditLog.create({
+    operation: "delete",
+    collection: "tasks",
+    docId: task._id,
+    userId: req.user._id,
+    userEmail: req.user.email,
+    before: task,
+    ipAddress: req.ip,
+    userAgent: req.get("user-agent"),
+  });
 
   res.status(200).json({
     success: true,
@@ -175,21 +268,26 @@ const addComment = asyncHandler(async (req, res, _next) => {
     throw new ApiErrors(400, "Comment content is required");
   }
 
-  const task = await Task.findById(req.params.id);
+  const task = await Task.findById(req.params.id).select("_id").lean();
 
   if (!task) {
     throw new ApiErrors(404, "Task not found");
   }
 
-  task.comments.push({
+  const newComment = {
     content,
-    author: req.user._id,
-  });
+    author: new mongoose.Types.ObjectId(req.user._id),
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
 
-  await task.save();
-
-  const updatedTask = await Task.findById(req.params.id)
-    .populate("comments.author", "name email");
+  const updatedTask = await Task.findByIdAndUpdate(
+    req.params.id,
+    { $push: { comments: newComment } },
+    { new: true }
+  )
+    .populate("comments.author", "name email")
+    .lean();
 
   res.status(201).json({
     success: true,
@@ -200,13 +298,13 @@ const addComment = asyncHandler(async (req, res, _next) => {
 const deleteComment = asyncHandler(async (req, res, _next) => {
   const { commentId } = req.params;
 
-  const task = await Task.findById(req.params.id);
+  const task = await Task.findById(req.params.id).select("comments").lean();
 
   if (!task) {
     throw new ApiErrors(404, "Task not found");
   }
 
-  const comment = task.comments.id(commentId);
+  const comment = task.comments.find(c => c._id.toString() === commentId);
 
   if (!comment) {
     throw new ApiErrors(404, "Comment not found");
@@ -216,8 +314,9 @@ const deleteComment = asyncHandler(async (req, res, _next) => {
     throw new ApiErrors(403, "You can only delete your own comments");
   }
 
-  task.comments.pull(commentId);
-  await task.save();
+  await Task.findByIdAndUpdate(req.params.id, {
+    $pull: { comments: { _id: new mongoose.Types.ObjectId(commentId) } }
+  });
 
   res.status(200).json({
     success: true,

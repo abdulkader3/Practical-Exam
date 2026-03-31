@@ -80,6 +80,15 @@ const taskSchema = new mongoose.Schema(
 );
 
 taskSchema.index({ title: "text", description: "text" });
+taskSchema.index({ status: 1 });
+taskSchema.index({ priority: 1 });
+taskSchema.index({ dueDate: 1 });
+taskSchema.index({ createdBy: 1 });
+taskSchema.index({ assignedTo: 1 });
+taskSchema.index({ createdAt: -1 });
+taskSchema.index({ status: 1, priority: 1 });
+taskSchema.index({ assignedTo: 1, status: 1 });
+taskSchema.index({ "tags.name": 1 });
 
 const Task = mongoose.model("Task", taskSchema);
 

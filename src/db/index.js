@@ -1,4 +1,3 @@
-import { setServers } from "node:dns/promises";
 import mongoose from "mongoose";
 import DB_NAME from "../constants.js";
 

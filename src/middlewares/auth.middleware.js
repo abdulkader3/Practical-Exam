@@ -16,7 +16,9 @@ export const verifyJWT = asyncHandler(async (req, res, next) => {
 
   const decodedToken = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 
-  const user = await User.findById(decodedToken?.id);
+  const user = await User.findById(decodedToken?.id)
+    .select("name email role active")
+    .lean();
 
   if (!user) {
     throw new ApiErrors(401, "User not found or inactive");
@@ -43,7 +45,9 @@ export const optionalAuth = asyncHandler(async (req, res, next) => {
 
   try {
     const decodedToken = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-    const user = await User.findById(decodedToken?.id);
+    const user = await User.findById(decodedToken?.id)
+      .select("name email role active")
+      .lean();
 
     if (user && user.active) {
       req.user = user;

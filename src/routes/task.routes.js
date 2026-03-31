@@ -9,14 +9,13 @@ import {
   deleteComment,
 } from "../controllers/task.controller.js";
 import { authenticate } from "../middlewares/auth.middleware.js";
-import { requireAdmin } from "../middlewares/permission.middleware.js";
 
 const router = Router();
 
 router.use(authenticate);
 
 router.post("/", createTask);
-router.get("/", requireAdmin, getAllTasks);
+router.get("/", getAllTasks);
 router.get("/:id", getTaskById);
 router.put("/:id", updateTask);
 router.delete("/:id", deleteTask);

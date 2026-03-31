@@ -27,13 +27,16 @@ const register = asyncHandler(async (req, res, _next) => {
   const { name, email, password, phone, company, role, monthlySalary } =
     req.body;
 
-  const existingUser = await User.findOne({ email: email?.toLowerCase() });
+  const existingUser = await User.findOne({ email: email?.toLowerCase() }).select("_id").lean();
   if (existingUser) {
     throw new ApiErrors(409, "Email already registered");
   }
 
   const userRole = role || "user";
-  const isFirstUser = (await User.countDocuments()) === 0;
+  const [userCount] = await Promise.all([
+    User.countDocuments()
+  ]);
+  const isFirstUser = userCount === 0;
   const finalRole = isFirstUser ? "admin" : userRole;
 
   const userData = {
@@ -127,13 +130,18 @@ const register = asyncHandler(async (req, res, _next) => {
 const login = asyncHandler(async (req, res, _next) => {
   const { email, password } = req.body;
 
-  const user = await User.findOne({ email: email?.toLowerCase() });
+  const user = await User.findOne({ email: email?.toLowerCase() })
+    .select("+refreshToken")
+    .lean();
 
   if (!user) {
     throw new ApiErrors(401, "Invalid email or password");
   }
 
-  const isPasswordValid = await user.comparePassword(password);
+  const isPasswordValid = await User.schema.methods.comparePassword.call(
+    { passwordHash: user.passwordHash },
+    password
+  );
 
   if (!isPasswordValid) {
     throw new ApiErrors(401, "Invalid email or password");
@@ -145,24 +153,26 @@ const login = asyncHandler(async (req, res, _next) => {
 
   const { accessToken, refreshToken } = generateTokens(user._id);
 
-  user.refreshToken = refreshToken;
-  user.lastLogin = new Date();
-  await user.save();
+  await Promise.all([
+    User.findByIdAndUpdate(user._id, { 
+      refreshToken, 
+      lastLogin: new Date() 
+    }),
+    AuditLog.create({
+      operation: "login",
+      collection: "users",
+      docId: user._id,
+      userId: user._id,
+      userEmail: user.email,
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent"),
+    })
+  ]);
 
-const options = {
-      httpOnly: true,
-      secure: true
-    };
-
-  await AuditLog.create({
-    operation: "login",
-    collection: "users",
-    docId: user._id,
-    userId: user._id,
-    userEmail: user.email,
-    ipAddress: req.ip,
-    userAgent: req.get("user-agent"),
-  });
+  const options = {
+    httpOnly: true,
+    secure: true
+  };
 
   res
     .status(200)
@@ -171,7 +181,7 @@ const options = {
     .json({
       success: true,
       data: {
-        user: user.toJSON(),
+        user: user,
         tokens: {
           access_token: accessToken,
           refresh_token: refreshToken,
@@ -216,9 +226,12 @@ const refreshAccessToken = asyncHandler(async (req, res, _next) => {
 
   const decodedToken = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
 
-  const user = await User.findById(decodedToken.id);
+  const user = await User.findOne({
+    _id: decodedToken.id,
+    refreshToken: token
+  }).select("+refreshToken").lean();
 
-  if (!user || user.refreshToken !== token) {
+  if (!user) {
     throw new ApiErrors(401, "Invalid refresh token");
   }
 
@@ -226,8 +239,18 @@ const refreshAccessToken = asyncHandler(async (req, res, _next) => {
     user._id
   );
 
-  user.refreshToken = newRefreshToken;
-  await user.save();
+  await Promise.all([
+    User.findByIdAndUpdate(user._id, { refreshToken: newRefreshToken }),
+    AuditLog.create({
+      operation: "refresh",
+      collection: "users",
+      docId: user._id,
+      userId: user._id,
+      userEmail: user.email,
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent"),
+    })
+  ]);
 
   const options = {
     httpOnly: true,
